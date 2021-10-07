@@ -25,6 +25,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.devtools.build.lib.remote.RemoteRetrier;
 import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
 import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
@@ -84,6 +85,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
@@ -132,6 +134,7 @@ public final class HttpCacheClient implements RemoteCacheClient {
   private final boolean useTls;
   private final boolean verifyDownloads;
   private final DigestUtil digestUtil;
+  private final RemoteRetrier retrier;
 
   private final Object closeLock = new Object();
 
@@ -153,6 +156,7 @@ public final class HttpCacheClient implements RemoteCacheClient {
       boolean verifyDownloads,
       ImmutableList<Entry<String, String>> extraHttpHeaders,
       DigestUtil digestUtil,
+      RemoteRetrier retrier,
       @Nullable final Credentials creds)
       throws Exception {
     return new HttpCacheClient(
@@ -164,6 +168,7 @@ public final class HttpCacheClient implements RemoteCacheClient {
         verifyDownloads,
         extraHttpHeaders,
         digestUtil,
+        retrier,
         creds,
         null);
   }
@@ -176,6 +181,7 @@ public final class HttpCacheClient implements RemoteCacheClient {
       boolean verifyDownloads,
       ImmutableList<Entry<String, String>> extraHttpHeaders,
       DigestUtil digestUtil,
+      RemoteRetrier retrier,
       @Nullable final Credentials creds)
       throws Exception {
 
@@ -189,6 +195,7 @@ public final class HttpCacheClient implements RemoteCacheClient {
           verifyDownloads,
           extraHttpHeaders,
           digestUtil,
+          retrier,
           creds,
           domainSocketAddress);
     } else if (Epoll.isAvailable()) {
@@ -201,6 +208,7 @@ public final class HttpCacheClient implements RemoteCacheClient {
           verifyDownloads,
           extraHttpHeaders,
           digestUtil,
+          retrier,
           creds,
           domainSocketAddress);
     } else {
@@ -217,6 +225,7 @@ public final class HttpCacheClient implements RemoteCacheClient {
       boolean verifyDownloads,
       ImmutableList<Entry<String, String>> extraHttpHeaders,
       DigestUtil digestUtil,
+      RemoteRetrier retrier,
       @Nullable final Credentials creds,
       @Nullable SocketAddress socketAddress)
       throws Exception {
@@ -285,6 +294,7 @@ public final class HttpCacheClient implements RemoteCacheClient {
     this.extraHttpHeaders = extraHttpHeaders;
     this.verifyDownloads = verifyDownloads;
     this.digestUtil = digestUtil;
+    this.retrier = retrier;
   }
 
   @SuppressWarnings("FutureReturnValueIgnored")
@@ -461,6 +471,7 @@ public final class HttpCacheClient implements RemoteCacheClient {
   @SuppressWarnings("FutureReturnValueIgnored")
   private ListenableFuture<Void> get(Digest digest, final OutputStream out, boolean casDownload) {
     final AtomicBoolean dataWritten = new AtomicBoolean();
+    AtomicLong bytesDownloaded = new AtomicLong();
     OutputStream wrappedOut =
         new OutputStream() {
           // OutputStream.close() does nothing, which is what we want to ensure that the
@@ -470,12 +481,14 @@ public final class HttpCacheClient implements RemoteCacheClient {
           @Override
           public void write(byte[] b, int offset, int length) throws IOException {
             dataWritten.set(true);
+            bytesDownloaded.addAndGet(length);
             out.write(b, offset, length);
           }
 
           @Override
           public void write(int b) throws IOException {
             dataWritten.set(true);
+            bytesDownloaded.incrementAndGet();
             out.write(b);
           }
 
@@ -484,57 +497,59 @@ public final class HttpCacheClient implements RemoteCacheClient {
             out.flush();
           }
         };
-    DownloadCommand downloadCmd = new DownloadCommand(uri, casDownload, digest, wrappedOut);
-    SettableFuture<Void> outerF = SettableFuture.create();
-    acquireDownloadChannel()
-        .addListener(
-            (Future<Channel> channelPromise) -> {
-              if (!channelPromise.isSuccess()) {
-                outerF.setException(channelPromise.cause());
-                return;
-              }
-
-              Channel ch = channelPromise.getNow();
-              ch.writeAndFlush(downloadCmd)
-                  .addListener(
-                      (f) -> {
-                        try {
-                          if (f.isSuccess()) {
-                            outerF.set(null);
-                          } else {
-                            Throwable cause = f.cause();
-                            // cause can be of type HttpException, because Netty uses
-                            // Unsafe.throwException to
-                            // re-throw a checked exception that hasn't been declared in the method
-                            // signature.
-                            if (cause instanceof HttpException) {
-                              HttpResponse response = ((HttpException) cause).response();
-                              if (!dataWritten.get() && authTokenExpired(response)) {
-                                // The error is due to an auth token having expired. Let's try
-                                // again.
-                                try {
-                                  refreshCredentials();
-                                  getAfterCredentialRefresh(downloadCmd, outerF);
-                                  return;
-                                } catch (IOException e) {
-                                  cause.addSuppressed(e);
-                                } catch (RuntimeException e) {
-                                  logger.atWarning().withCause(e).log("Unexpected exception");
-                                  cause.addSuppressed(e);
-                                }
-                              } else if (cacheMiss(response.status())) {
-                                outerF.setException(new CacheNotFoundException(digest));
-                                return;
-                              }
-                            }
-                            outerF.setException(cause);
-                          }
-                        } finally {
-                          releaseDownloadChannel(ch);
+    return retrier.executeAsync(() -> {
+      DownloadCommand downloadCmd = new DownloadCommand(uri, casDownload, digest, wrappedOut, bytesDownloaded.get());
+      SettableFuture<Void> outerF = SettableFuture.create();
+      acquireDownloadChannel()
+              .addListener(
+                      (Future<Channel> channelPromise) -> {
+                        if (!channelPromise.isSuccess()) {
+                          outerF.setException(channelPromise.cause());
+                          return;
                         }
+
+                        Channel ch = channelPromise.getNow();
+                        ch.writeAndFlush(downloadCmd)
+                                .addListener(
+                                        (f) -> {
+                                          try {
+                                            if (f.isSuccess()) {
+                                              outerF.set(null);
+                                            } else {
+                                              Throwable cause = f.cause();
+                                              // cause can be of type HttpException, because Netty uses
+                                              // Unsafe.throwException to
+                                              // re-throw a checked exception that hasn't been declared in the method
+                                              // signature.
+                                              if (cause instanceof HttpException) {
+                                                HttpResponse response = ((HttpException) cause).response();
+                                                if (!dataWritten.get() && authTokenExpired(response)) {
+                                                  // The error is due to an auth token having expired. Let's try
+                                                  // again.
+                                                  try {
+                                                    refreshCredentials();
+                                                    getAfterCredentialRefresh(downloadCmd, outerF);
+                                                    return;
+                                                  } catch (IOException e) {
+                                                    cause.addSuppressed(e);
+                                                  } catch (RuntimeException e) {
+                                                    logger.atWarning().withCause(e).log("Unexpected exception");
+                                                    cause.addSuppressed(e);
+                                                  }
+                                                } else if (cacheMiss(response.status())) {
+                                                  outerF.setException(new CacheNotFoundException(digest));
+                                                  return;
+                                                }
+                                              }
+                                              outerF.setException(cause);
+                                            }
+                                          } finally {
+                                            releaseDownloadChannel(ch);
+                                          }
+                                        });
                       });
-            });
-    return outerF;
+      return outerF;
+    });
   }
 
   @SuppressWarnings("FutureReturnValueIgnored")
@@ -673,20 +688,21 @@ public final class HttpCacheClient implements RemoteCacheClient {
   @Override
   public ListenableFuture<Void> uploadFile(
       RemoteActionExecutionContext context, Digest digest, Path file) {
-    try {
-      return uploadAsync(
-          digest.getHash(), digest.getSizeBytes(), file.getInputStream(), /* casUpload= */ true);
-    } catch (IOException e) {
-      // Can be thrown from file.getInputStream.
-      return Futures.immediateFailedFuture(e);
-    }
+    return retrier.executeAsync(() -> {
+      try {
+        return uploadAsync(digest.getHash(), digest.getSizeBytes(), file.getInputStream(), /* casUpload= */ true);
+      } catch (IOException e) {
+        // Can be thrown from file.getInputStream.
+        return Futures.immediateFailedFuture(e);
+      }
+    });
   }
 
   @Override
   public ListenableFuture<Void> uploadBlob(
       RemoteActionExecutionContext context, Digest digest, ByteString data) {
-    return uploadAsync(
-        digest.getHash(), digest.getSizeBytes(), data.newInput(), /* casUpload= */ true);
+    return retrier.executeAsync(() -> uploadAsync(
+        digest.getHash(), digest.getSizeBytes(), data.newInput(), /* casUpload= */ true));
   }
 
   @Override

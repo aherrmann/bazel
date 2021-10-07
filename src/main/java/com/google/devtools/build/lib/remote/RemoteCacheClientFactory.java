@@ -56,15 +56,16 @@ public final class RemoteCacheClientFactory {
       RemoteOptions options,
       @Nullable Credentials creds,
       Path workingDirectory,
-      DigestUtil digestUtil)
+      DigestUtil digestUtil,
+      RemoteRetrier retrier)
       throws IOException {
     Preconditions.checkNotNull(workingDirectory, "workingDirectory");
     if (isHttpCache(options) && isDiskCache(options)) {
       return createDiskAndHttpCache(
-          workingDirectory, options.diskCache, options, creds, digestUtil);
+          workingDirectory, options.diskCache, options, creds, digestUtil, retrier);
     }
     if (isHttpCache(options)) {
-      return createHttp(options, creds, digestUtil);
+      return createHttp(options, creds, digestUtil, retrier);
     }
     if (isDiskCache(options)) {
       return createDiskCache(
@@ -80,7 +81,7 @@ public final class RemoteCacheClientFactory {
   }
 
   private static RemoteCacheClient createHttp(
-      RemoteOptions options, Credentials creds, DigestUtil digestUtil) {
+      RemoteOptions options, Credentials creds, DigestUtil digestUtil, RemoteRetrier retrier) {
     Preconditions.checkNotNull(options.remoteCache, "remoteCache");
 
     try {
@@ -99,6 +100,7 @@ public final class RemoteCacheClientFactory {
               options.remoteVerifyDownloads,
               ImmutableList.copyOf(options.remoteHeaders),
               digestUtil,
+              retrier,
               creds);
         } else {
           throw new Exception("Remote cache proxy unsupported: " + options.remoteProxy);
@@ -111,6 +113,7 @@ public final class RemoteCacheClientFactory {
             options.remoteVerifyDownloads,
             ImmutableList.copyOf(options.remoteHeaders),
             digestUtil,
+            retrier,
             creds);
       }
     } catch (Exception e) {
@@ -137,7 +140,8 @@ public final class RemoteCacheClientFactory {
       PathFragment diskCachePath,
       RemoteOptions options,
       Credentials cred,
-      DigestUtil digestUtil)
+      DigestUtil digestUtil,
+      RemoteRetrier retrier)
       throws IOException {
     Path cacheDir =
         workingDirectory.getRelative(Preconditions.checkNotNull(diskCachePath, "diskCachePath"));
@@ -145,7 +149,7 @@ public final class RemoteCacheClientFactory {
       cacheDir.createDirectoryAndParents();
     }
 
-    RemoteCacheClient httpCache = createHttp(options, cred, digestUtil);
+    RemoteCacheClient httpCache = createHttp(options, cred, digestUtil, retrier);
     return createDiskAndRemoteClient(
         workingDirectory,
         diskCachePath,
