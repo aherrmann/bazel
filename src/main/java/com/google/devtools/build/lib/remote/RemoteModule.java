@@ -251,6 +251,9 @@ public final class RemoteModule extends BlazeModule {
                        retry = true;
                      }
                    }
+                   if (!(e instanceof CacheNotFoundException)) {
+                        System.err.println("!!! RemoteRetrier - retrying " + new Boolean(retry).toString() + " - exception " + e.toString());
+                   }
                    return retry;
                  },
                  retryScheduler,
@@ -468,7 +471,13 @@ public final class RemoteModule extends BlazeModule {
     RemoteRetrier retrier =
         new RemoteRetrier(
             remoteOptions,
-            RemoteRetrier.RETRIABLE_GRPC_ERRORS,
+            (e) -> {
+              boolean retry = RemoteRetrier.RETRIABLE_GRPC_ERRORS.test(e);
+              if (!(e instanceof CacheNotFoundException)) {
+                System.err.println("!!! RemoteRetrier - retrying " + new Boolean(retry).toString() + " - exception " + e.toString());
+              }
+              return retry;
+            },
             retryScheduler,
             Retrier.ALLOW_ALL_CALLS);
 
