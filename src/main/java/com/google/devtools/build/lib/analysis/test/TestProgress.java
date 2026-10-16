@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId.ConfigurationId;
 import com.google.devtools.build.lib.buildeventstream.GenericBuildEvent;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import javax.annotation.Nullable;
 
@@ -30,7 +31,7 @@ import javax.annotation.Nullable;
 @Immutable
 public final class TestProgress implements BuildEvent {
   /** The label of the target for the action. */
-  private final String label;
+  private final Label label;
 
   /** The configuration under which the action is running. */
   private final BuildEventId.ConfigurationId configId;
@@ -51,7 +52,7 @@ public final class TestProgress implements BuildEvent {
   private final String uri;
 
   public TestProgress(
-      String label,
+      Label label,
       ConfigurationId configId,
       int run,
       int shard,

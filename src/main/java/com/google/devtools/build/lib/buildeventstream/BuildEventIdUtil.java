@@ -40,10 +40,6 @@ public final class BuildEventIdUtil {
     return label.toString().intern();
   }
 
-  private static String internLabel(String label) {
-    return label.intern();
-  }
-
   private static final Interner<ConfigurationId> CONFIGURATION_ID_INTERNER =
       Interners.newWeakInterner();
 
@@ -270,7 +266,7 @@ public final class BuildEventIdUtil {
   }
 
   public static BuildEventId testProgressId(
-      String label,
+      Label label,
       BuildEventId.ConfigurationId configId,
       int run,
       int shard,

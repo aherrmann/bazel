@@ -20,17 +20,20 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Bui
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId.ConfigurationId;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId.TestProgressId;
+import com.google.devtools.build.lib.cmdline.Label;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public class TestProgressTest {
+  private static final Label LABEL = Label.parseCanonicalUnchecked("@@repo+//pkg:test");
+
   @Test
   public void testTestProgress_convertsToEventId() {
     TestProgress progress =
         new TestProgress(
-            "alabel", ConfigurationId.newBuilder().setId("configid").build(), 1, 2, 3, 4, "auri");
+            LABEL, ConfigurationId.newBuilder().setId("configid").build(), 1, 2, 3, 4, "auri");
 
     BuildEventId id = progress.getEventId();
 
@@ -39,7 +42,7 @@ public class TestProgressTest {
             BuildEventId.newBuilder()
                 .setTestProgress(
                     TestProgressId.newBuilder()
-                        .setLabel("alabel")
+                        .setLabel("@@repo+//pkg:test")
                         .setConfiguration(ConfigurationId.newBuilder().setId("configid"))
                         .setRun(1)
                         .setShard(2)
@@ -52,7 +55,7 @@ public class TestProgressTest {
   public void testTestProgress_convertsToEvent() {
     TestProgress progress =
         new TestProgress(
-            "alabel", ConfigurationId.newBuilder().setId("configid").build(), 1, 2, 3, 4, "auri");
+            LABEL, ConfigurationId.newBuilder().setId("configid").build(), 1, 2, 3, 4, "auri");
 
     BuildEvent event = progress.asStreamProto(null);
 
@@ -63,7 +66,7 @@ public class TestProgressTest {
                     BuildEventId.newBuilder()
                         .setTestProgress(
                             TestProgressId.newBuilder()
-                                .setLabel("alabel")
+                                .setLabel("@@repo+//pkg:test")
                                 .setConfiguration(ConfigurationId.newBuilder().setId("configid"))
                                 .setRun(1)
                                 .setShard(2)
